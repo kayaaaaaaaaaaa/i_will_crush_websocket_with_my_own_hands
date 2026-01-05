@@ -1,0 +1,200 @@
+원하면 다음엔 메시지 흐름을 한글 다이어그램/순서도로 정리해줄게요.
+
+
+
+• 원하면 아래 두 가지 중에서 골라줘. 어떤 형태로 정리할지 알려주면 맞춰서 써줄게.
+
+  1. 텍스트 순서도 (클라이언트 ↔ 서버 메시지 흐름 단계별)
+  2. 메시지 타입별 표 + 예시 JSON (join/peers/signal/leave)
+
+  원하는 번호만 말해줘.
+
+
+
+• 좋아. 시그널링 흐름을 “클라이언트 ↔ 서버” 관점에서 단계별 순서도로 정리해줄게.
+  준비되면 보내줄게.
+
+
+› ㅇㅇ
+
+
+• 시그널링 흐름 순서도 (클라이언트 ↔ 서버)
+
+      1. WebSocket 연결
+      - Client → Server: ws://<host>:8081/ws 연결
+      - Server → Client: 연결 수락 (101)
+      2. 룸 입장 요청
+      - Client → Server: {"type":"join","roomId":"...","name":"..."}
+      - Server: 룸 생성(없으면) + 인원수 확인 + clientId 발급
+      3. 입장 응답 (신규 클라이언트에게)
+      - Server → Client: {"type":"welcome","clientId":"...","roomId":"..."}
+      - Server → Client: {"type":"peers","peers":[{id,name}, ...]}
+          - 신규 클라이언트는 이 peers 목록을 보고 각 피어에게 Offer를 시작
+      4. 신규 입장 알림 (기존 클라이언트에게)
+      - Server → Existing Clients:
+        {"type":"peer-joined","peer":{"id":"<newId>","name":"<name>"}}
+      - 기존 클라이언트는 새 피어의 연결 준비를 한다
+      5. WebRTC Offer/Answer 교환 (클라이언트 ↔ 클라이언트, 서버는 중계만)
+      - Client A → Server:
+        {"type":"signal","to":"<peerId>","data":{"kind":"offer","sdp":"..."}}
+      - Server → Client B:
+        {"type":"signal","from":"<clientId>","data":{"kind":"offer","sdp":"..."}}
+      - Client B → Server:
+        {"type":"signal","to":"<peerId>","data":{"kind":"answer","sdp":"..."}}
+      - Server → Client A:
+        {"type":"signal","from":"<clientId>","data":{"kind":"answer","sdp":"..."}}
+      6. ICE 후보 교환
+      - Client → Server:
+        {"type":"signal","to":"<peerId>","data":{"kind":"candidate","candidate":{...}}}
+      - Server → Peer:
+        {"type":"signal","from":"<clientId>","data":{"kind":"candidate","candidate":{...}}}
+      7. 퇴장
+      - Client → Server: {"type":"leave"} 또는 소켓 종료
+      - Server: 룸/세션에서 제거
+      8. 룸 정리
+      - 마지막 사람이 나가면 서버는 해당 룸을 메모리에서 제거
+
+  필요하면 이 흐름을 기준으로 “프론트 코드에서 어떤 함수가 어떤 메시지를 보내는지”까지 매칭해서 설명해줄게.
+
+
+› ㅇㅇ
+
+
+• 아래는 프론트 함수 ↔ 시그널링 메시지 ↔ 백엔드 핸들러 매칭입니다.
+
+  클라이언트(프론트)
+
+  - frontend/src/App.jsx joinRoom()
+      - send: {"type":"join","roomId","name"}
+      - 서버: backend/src/main/java/com/example/videoroom/signaling/SignalingWebSocketHandler.java handleJoin()
+  - frontend/src/App.jsx handleMessage()
+      - recv: welcome → setClientId, setConnected
+      - recv: peers → 각 피어에 createOffer() 후 sendSignal()
+  - frontend/src/App.jsx sendSignal()
+      - send: {"type":"signal","to","data":{kind:offer|answer|candidate}}
+      - 서버: backend/src/main/java/com/example/videoroom/signaling/SignalingWebSocketHandler.java handleSignal()
+  - frontend/src/App.jsx handleSignal()
+      - recv: signal → setRemoteDescription / createAnswer / addIceCandidate
+  - frontend/src/App.jsx leaveRoom()
+      - send: {"type":"leave"}
+      - 서버: backend/src/main/java/com/example/videoroom/signaling/SignalingWebSocketHandler.java handleLeave()
+
+  서버(백엔드)
+      - join() → clientId 발급, peers 스냅샷 생성
+      - leave() → 룸/세션 정리 및 빈 룸 삭제
+  - backend/src/main/java/com/example/videoroom/signaling/SignalingWebSocketHandler.java
+      - handleJoin() → welcome, peers, peer-joined 전송
+      - handleSignal() → 대상에게 signal 중계
+      - handleLeave() → 나머지에게 peer-left 브로드캐스트
+
+  원하면 “각 메시지가 프론트에서 어떤 UI 상태를 바꾸는지”까지도 표로 이어서 정리해줄게.
+
+
+› ㅇㅇ
+
+
+• 아래는 메시지 → 프론트 상태/화면 변화 매핑입니다.
+  (기준: frontend/src/App.jsx)
+
+  - welcome
+      - 상태 변화: setClientId, setConnected(true), setStatus("connected")
+      - 화면 변화: 상단 상태가 Connected, Client ID 표시됨
+  - peers
+      - 상태 변화: 각 피어에 대해 getOrCreatePeerConnection() + createOffer() + sendSignal()
+      - 화면 변화: 아직 영상은 없고, 피어 연결 시도 시작
+  - peer-joined
+      - 상태 변화: updatePeerName(), getOrCreatePeerConnection()
+      - 화면 변화: 아직 영상은 없고, 새 피어 연결 준비
+  - signal (offer)
+      - 상태 변화: setRemoteDescription(offer), createAnswer(), sendSignal(answer)
+      - 화면 변화: 상대방 스트림 들어오면 타일 생성
+  - signal (answer)
+      - 상태 변화: setRemoteDescription(answer)
+      - 화면 변화: 상대방 스트림 들어오면 타일 생성
+  - signal (candidate)
+      - 상태 변화: addIceCandidate()
+      - 화면 변화: 연결 안정화되며 영상/오디오 품질 개선
+  - peer-left
+      - 상태 변화: cleanupPeer(), removePeer()
+      - 상태 변화: setError(...)
+      - 화면 변화: 하단 에러 메시지 표시
+
+  추가로 원하면 “로컬 카메라 스트림이 언제 시작되고, 어떤 UI에 바인딩되는지”도 상세히 풀어줄게.
+
+
+› ㅇㅇ
+
+
+• 아래는 로컬 카메라/마이크 스트림 흐름만 떼어서 단계별로 설명한 거예요.
+
+  로컬 스트림 흐름
+
+      1. 사용자가 Join 클릭
+      - 함수: joinRoom()
+      - 동작: await startLocalStream() 호출
+      2. 카메라/마이크 권한 요청
+      - 함수: startLocalStream()
+      - 호출: navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+      - 성공 시: 반환된 stream을 localStreamRef.current에 저장
+      3. 로컬 영상 미리보기 연결
+      - 함수: startLocalStream() 내
+      - 동작: localVideoRef.current.srcObject = stream
+      - 결과: 화면의 “내 영상 타일”에 영상이 표시됨
+      4. WebRTC 피어 연결에 로컬 트랙 추가
+      - 함수: getOrCreatePeerConnection(peerId)
+      - 동작: localStreamRef.current.getTracks()를 순회하며 pc.addTrack(track, stream)
+      - 결과: 상대 피어에게 내 영상/오디오가 전송될 준비 완료
+      5. Leave 시 정리
+      - 함수: leaveRoom() → stopLocalStream()
+
+  주의 포인트
+
+  - getUserMedia는 HTTPS(또는 localhost)에서만 안정적으로 동작
+  - 모바일은 HTTP 차단이 더 엄격 → HTTPS 필요
+  - 다른 앱이 카메라 점유 중이면 실패 (NotReadableError 등)
+
+  원하면 여기서 “실패 케이스별 에러 메시지/대응”도 정리해줄게.
+
+
+› ㅇㅇ
+
+
+• 아래는 getUserMedia 실패 케이스별 원인/대응 정리입니다.
+
+  1. NotAllowedError / Permission denied
+
+  - 원인: 카메라/마이크 권한 거부, 또는 보안 컨텍스트가 아님(HTTP)
+  - 대응:
+      - 브라우저 권한 허용
+      - HTTPS 사용 (또는 localhost)
+      - 모바일에서는 특히 HTTPS 필수
+
+  2. NotFoundError
+
+  - 원인: 사용할 카메라/마이크 디바이스가 없음
+  - 대응:
+      - 장치 연결 확인
+      - OS에서 디바이스 활성화 확인
+
+  3. NotReadableError
+
+  - 원인: 장치가 다른 앱에 의해 사용 중
+  - 대응:
+      - 카메라 사용하는 앱 종료 (Zoom/Teams/Discord 등)
+      - 브라우저 재시작
+
+  4. OverconstrainedError
+
+  - 원인: 요청한 제약 조건이 불가능
+    (예: 특정 해상도/프레임 요구)
+  - 대응:
+      - constraints 단순화 (현재 코드는 기본값이라 거의 없음)
+
+  5. SecurityError
+
+  - 원인: 보안 정책 위반(iframe, insecure origin 등)
+  - 대응:
+      - HTTPS로 제공
+      - iframe이면 allow="camera; microphone" 추가
+
+  원하면 프론트 코드에 에러 메시지를 구체화해서 사용자에게 이유를 바로 보여주도록 바꿔줄게.
